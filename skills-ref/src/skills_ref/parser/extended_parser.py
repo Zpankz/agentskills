@@ -13,7 +13,9 @@ from ..types.ast import (
     CalloutNode, TableNode, WikiLinkInline, InlineNode,
     TextNode, TagInlineNode, FootnoteRefNode,
     TagNode, HorizontalRuleNode, BlockquoteNode,
-    FrontmatterNode
+    FrontmatterNode, ListNode, ListItemNode,
+    ExternalLinkNode, FileLinkNode,
+    DataviewBlockNode, TemplaterBlockNode
 )
 from ..types.index import SemanticIndex
 from ..errors import ParseError
@@ -29,6 +31,7 @@ class ParserState(Enum):
     IN_CALLOUT = auto()
     IN_TABLE = auto()
     IN_LIST = auto()
+    IN_BLOCKQUOTE = auto()
 
 
 @dataclass
@@ -46,6 +49,11 @@ class ParserContext:
     current_heading_stack: List[HeadingNode] = field(default_factory=list)
     line_number: int = 0
     column: int = 0
+    # New buffers for blockquotes and lists
+    blockquote_buffer: List[str] = field(default_factory=list)
+    list_buffer: List[Tuple[int, str, bool, bool]] = field(default_factory=list)  # (indent, content, is_task, checked)
+    list_ordered: bool = False
+    list_start_line: int = 0
 
 
 @dataclass
@@ -226,6 +234,14 @@ class ExtendedSkillParser:
         if ctx.state == ParserState.IN_TABLE:
             return self._process_table_line(line, ctx)
 
+        # State: Inside blockquote
+        if ctx.state == ParserState.IN_BLOCKQUOTE:
+            return self._process_blockquote_line(line, ctx)
+
+        # State: Inside list
+        if ctx.state == ParserState.IN_LIST:
+            return self._process_list_line(line, ctx)
+
         # State: Normal - detect new constructs
         return self._process_normal_line(line, ctx)
 
@@ -258,6 +274,31 @@ class ExtendedSkillParser:
             ctx.table_buffer = [line]
             return None
 
+        # Check for blockquote (but not callout - callout already handled above)
+        blockquote_match = re.match(r'^>\s?(.*)$', line)
+        if blockquote_match and not PATTERNS[PatternType.CALLOUT].regex.match(line):
+            ctx.state = ParserState.IN_BLOCKQUOTE
+            ctx.blockquote_buffer = [blockquote_match.group(1)]
+            return None
+
+        # Check for list item (ordered or unordered, with optional checkbox)
+        list_match = re.match(r'^(\s*)([-*+]|\d+\.)\s+(?:\[([xX\s])\]\s+)?(.*)$', line)
+        if list_match:
+            indent = len(list_match.group(1))
+            marker = list_match.group(2)
+            checkbox = list_match.group(3)
+            content = list_match.group(4)
+
+            is_ordered = marker[0].isdigit()
+            is_task = checkbox is not None
+            checked = checkbox and checkbox.lower() == 'x'
+
+            ctx.state = ParserState.IN_LIST
+            ctx.list_buffer = [(indent, content, is_task, checked)]
+            ctx.list_ordered = is_ordered
+            ctx.list_start_line = ctx.line_number
+            return None
+
         # Check for block ID at end of line (BEFORE heading check to strip it)
         block_id = None
         block_match = PATTERNS[PatternType.BLOCK_ID].regex.search(line)
@@ -273,6 +314,17 @@ class ExtendedSkillParser:
                 text=heading_match.group(2),
                 line=ctx.line_number,
                 block_id=block_id
+            )
+
+        # Check for horizontal rule
+        if re.match(r'^(\*{3,}|-{3,}|_{3,})\s*$', line):
+            return HorizontalRuleNode(
+                type='thematic_break',
+                position=SourcePosition(
+                    start=LineColumn(ctx.line_number, 0, 0),
+                    end=LineColumn(ctx.line_number, len(line), 0)
+                ),
+                raw=line
             )
 
         # Regular paragraph
@@ -319,6 +371,48 @@ class ExtendedSkillParser:
             ctx.table_buffer = []
             return node
 
+    def _process_blockquote_line(self, line: str, ctx: ParserContext) -> Optional[ASTNode]:
+        """Process line inside blockquote."""
+        blockquote_match = re.match(r'^>\s?(.*)$', line)
+        if blockquote_match:
+            ctx.blockquote_buffer.append(blockquote_match.group(1))
+            return None
+        else:
+            # End of blockquote
+            ctx.state = ParserState.NORMAL
+            node = self._create_blockquote_node(ctx.blockquote_buffer, ctx.line_number - len(ctx.blockquote_buffer))
+            ctx.blockquote_buffer = []
+            return node
+
+    def _process_list_line(self, line: str, ctx: ParserContext) -> Optional[ASTNode]:
+        """Process line inside list."""
+        list_match = re.match(r'^(\s*)([-*+]|\d+\.)\s+(?:\[([xX\s])\]\s+)?(.*)$', line)
+        if list_match:
+            indent = len(list_match.group(1))
+            checkbox = list_match.group(3)
+            content = list_match.group(4)
+
+            is_task = checkbox is not None
+            checked = checkbox and checkbox.lower() == 'x'
+
+            ctx.list_buffer.append((indent, content, is_task, checked))
+            return None
+        elif line.strip() == '':
+            # Blank line might continue list or end it
+            # For simplicity, end the list on blank line
+            ctx.state = ParserState.NORMAL
+            node = self._create_list_node(ctx.list_buffer, ctx.list_ordered, ctx.list_start_line)
+            ctx.list_buffer = []
+            return node
+        else:
+            # Non-list line ends the list
+            ctx.state = ParserState.NORMAL
+            node = self._create_list_node(ctx.list_buffer, ctx.list_ordered, ctx.list_start_line)
+            ctx.list_buffer = []
+            # Note: we should process this line in NORMAL state
+            # Return the list node; the current line will be processed next iteration
+            return node
+
     def _flush_buffers(self, ctx: ParserContext) -> List[ASTNode]:
         nodes = []
         if ctx.state == ParserState.IN_CODE_BLOCK:
@@ -343,6 +437,10 @@ class ExtendedSkillParser:
             ))
         elif ctx.state == ParserState.IN_TABLE:
             nodes.append(self._create_table_node(ctx.table_buffer, ctx.line_number - len(ctx.table_buffer)))
+        elif ctx.state == ParserState.IN_BLOCKQUOTE:
+            nodes.append(self._create_blockquote_node(ctx.blockquote_buffer, ctx.line_number - len(ctx.blockquote_buffer)))
+        elif ctx.state == ParserState.IN_LIST:
+            nodes.append(self._create_list_node(ctx.list_buffer, ctx.list_ordered, ctx.list_start_line))
 
         return nodes
 
@@ -393,7 +491,7 @@ class ExtendedSkillParser:
         return anchor.strip('-')
 
     def _parse_inline(self, text: str, line: int) -> List[InlineNode]:
-        """Parse inline content for wikilinks, tags, footnotes, etc."""
+        """Parse inline content for wikilinks, tags, footnotes, links, etc."""
         nodes = []
 
         # This is a simplified inline parser. A real one would need to handle overlapping matches.
@@ -413,6 +511,57 @@ class ExtendedSkillParser:
                     end=LineColumn(line, match.end(), 0)
                 )
             ))
+
+        # Extract external links with enhanced support
+        for match in PATTERNS[PatternType.EXTERNAL_LINK].find_all(text):
+            url = match.group('url')
+            link_type = 'http'
+            if url.startswith('https://'):
+                link_type = 'https'
+            elif url.startswith('mailto:'):
+                link_type = 'mailto'
+            elif url.startswith('ftp://'):
+                link_type = 'ftp'
+
+            nodes.append(ExternalLinkNode(
+                type='link',
+                url=url,
+                link_type=link_type,
+                title=match.group('title'),
+                children=[TextNode(
+                    type='text',
+                    text=match.group('text'),
+                    position=SourcePosition(
+                        start=LineColumn(line, match.start(), 0),
+                        end=LineColumn(line, match.end(), 0)
+                    )
+                )],
+                position=SourcePosition(
+                    start=LineColumn(line, match.start(), 0),
+                    end=LineColumn(line, match.end(), 0)
+                )
+            ))
+
+        # Extract file links
+        file_link_pattern = re.compile(
+            r'\[(?P<display>[^\]]+)\]\(file://(?P<path>[^\)]+)\)'
+            r'|'
+            r'(?<!\()\bfile://(?P<bare_path>[^\s\)>\]]+)'
+        )
+        for match in file_link_pattern.finditer(text):
+            display = match.group('display')
+            path = match.group('path') or match.group('bare_path')
+            if path:
+                nodes.append(FileLinkNode(
+                    type='file_link',
+                    path=path,
+                    display=display,
+                    is_absolute=path.startswith('/') or (len(path) > 1 and path[1] == ':'),
+                    position=SourcePosition(
+                        start=LineColumn(line, match.start(), 0),
+                        end=LineColumn(line, match.end(), 0)
+                    )
+                ))
 
         # Extract tags
         for match in PATTERNS[PatternType.NESTED_TAG].find_all(text):
@@ -500,4 +649,54 @@ class ExtendedSkillParser:
                 end=LineColumn(line + len(buffer), 0, 0)
             ),
             raw='\n'.join(buffer)
+        )
+
+    def _create_blockquote_node(self, buffer: List[str], line: int) -> BlockquoteNode:
+        """Create blockquote node with nested content."""
+        content = '\n'.join(buffer)
+        children = self._parse_fragment(content, line)
+
+        return BlockquoteNode(
+            type='blockquote',
+            children=children,
+            position=SourcePosition(
+                start=LineColumn(line, 0, 0),
+                end=LineColumn(line + len(buffer), 0, 0)
+            ),
+            raw='\n'.join(['> ' + l for l in buffer])
+        )
+
+    def _create_list_node(
+        self,
+        items: List[Tuple[int, str, bool, bool]],
+        ordered: bool,
+        line: int
+    ) -> ListNode:
+        """Create list node with task item support."""
+        list_items = []
+
+        for i, (indent, content, is_task, checked) in enumerate(items):
+            inline_content = self._parse_inline(content, line + i)
+
+            list_items.append(ListItemNode(
+                type='list_item',
+                is_task=is_task,
+                checked=checked,
+                children=[],  # Could contain nested content
+                position=SourcePosition(
+                    start=LineColumn(line + i, indent, 0),
+                    end=LineColumn(line + i, indent + len(content), 0)
+                ),
+                raw=content
+            ))
+
+        return ListNode(
+            type='list',
+            ordered=ordered,
+            items=list_items,
+            position=SourcePosition(
+                start=LineColumn(line, 0, 0),
+                end=LineColumn(line + len(items), 0, 0)
+            ),
+            raw=''
         )

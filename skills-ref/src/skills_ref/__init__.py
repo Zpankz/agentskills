@@ -6,7 +6,11 @@ from .parser import find_skill_md, read_properties, ExtendedSkillParser, Extende
 from .prompt import to_prompt
 from .validation import validate, SkillValidator
 from .navigation import BlockNavigator, ProgressiveLoader, SkillRegistry, LoadRequest, LoadingStrategy
-from .execution import ScriptSandbox, MermaidExecutor, SandboxConfig
+from .execution import (
+    ScriptSandbox, MermaidExecutor, SandboxConfig,
+    DataviewExecutor, DataviewParser, DataviewResult,
+    TemplaterProcessor, TemplaterTemplate, TemplaterResult
+)
 from .integration import CrossSkillResolver, SkillComposer
 
 __all__ = [
@@ -29,6 +33,12 @@ __all__ = [
     "ScriptSandbox",
     "MermaidExecutor",
     "SandboxConfig",
+    "DataviewExecutor",
+    "DataviewParser",
+    "DataviewResult",
+    "TemplaterProcessor",
+    "TemplaterTemplate",
+    "TemplaterResult",
     "CrossSkillResolver",
     "SkillComposer",
 ]

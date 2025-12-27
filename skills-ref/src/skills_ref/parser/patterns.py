@@ -20,6 +20,12 @@ class PatternType(Enum):
     DATAVIEW_INLINE = auto()
     TEMPLATER_CMD = auto()
     TEMPLATER_EXEC = auto()
+    # New patterns
+    BLOCKQUOTE = auto()
+    TASK_ITEM = auto()
+    FILE_LINK = auto()
+    EXTERNAL_LINK = auto()
+    OBSIDIAN_URI = auto()
 
 @dataclass(frozen=True)
 class ObsidianPattern:
@@ -157,6 +163,62 @@ PATTERNS: dict[PatternType, ObsidianPattern] = {
         regex=re.compile(r'<%\*\s*(?P<code>.*?)\s*%>', re.DOTALL),
         description="Templater execution block",
         capture_groups=('code',)
+    ),
+
+    PatternType.BLOCKQUOTE: ObsidianPattern(
+        pattern_type=PatternType.BLOCKQUOTE,
+        regex=re.compile(
+            r'^(?P<indent>\s*)>(?P<content>.*)$',
+            re.MULTILINE
+        ),
+        description="Blockquote line (not a callout)",
+        capture_groups=('indent', 'content')
+    ),
+
+    PatternType.TASK_ITEM: ObsidianPattern(
+        pattern_type=PatternType.TASK_ITEM,
+        regex=re.compile(
+            r'^(?P<indent>\s*)[-*+]\s+\[(?P<state>[xX\s])\]\s*(?P<content>.*)$',
+            re.MULTILINE
+        ),
+        description="Task/checkbox list item with state",
+        capture_groups=('indent', 'state', 'content')
+    ),
+
+    PatternType.FILE_LINK: ObsidianPattern(
+        pattern_type=PatternType.FILE_LINK,
+        regex=re.compile(
+            r'(?:file://)?(?P<path>(?:[./]|[a-zA-Z]:)[^\s\)>\]]+)'
+            r'|'
+            r'\[(?P<display>[^\]]+)\]\(file://(?P<file_path>[^\)]+)\)',
+            re.UNICODE
+        ),
+        description="File link (file:// protocol or local path)",
+        capture_groups=('path', 'display', 'file_path')
+    ),
+
+    PatternType.EXTERNAL_LINK: ObsidianPattern(
+        pattern_type=PatternType.EXTERNAL_LINK,
+        regex=re.compile(
+            r'\[(?P<text>[^\]]*)\]\('
+            r'(?P<url>(?:https?|mailto|ftp)://[^\s\)]+)'
+            r'(?:\s+"(?P<title>[^"]+)")?'
+            r'\)',
+            re.UNICODE
+        ),
+        description="External link with optional title",
+        capture_groups=('text', 'url', 'title')
+    ),
+
+    PatternType.OBSIDIAN_URI: ObsidianPattern(
+        pattern_type=PatternType.OBSIDIAN_URI,
+        regex=re.compile(
+            r'obsidian://(?P<action>open|new|search|hook-get-address)'
+            r'\?(?P<params>[^\s\)]+)',
+            re.UNICODE
+        ),
+        description="Obsidian protocol URI",
+        capture_groups=('action', 'params')
     ),
 }
 
