@@ -24,7 +24,9 @@ ASTNode = Union[
     'FootnoteNode',
     'TagNode',
     'HorizontalRuleNode',
-    'FrontmatterNode'
+    'FrontmatterNode',
+    'DataviewBlockNode',
+    'TemplaterBlockNode'
 ]
 
 InlineNode = Union[
@@ -34,6 +36,7 @@ InlineNode = Union[
     'CodeInlineNode',
     'WikiLinkInline',
     'ExternalLinkNode',
+    'FileLinkNode',
     'FootnoteRefNode',
     'TagInlineNode',
     'HighlightNode'
@@ -63,6 +66,9 @@ class ListNode(BaseASTNode):
 class ListItemNode(BaseASTNode):
     type: Literal['list_item'] = 'list_item'
     children: List[ASTNode] = field(default_factory=list)
+    # Checkbox/task list support
+    is_task: bool = False
+    checked: bool = False  # True if [x], False if [ ]
 
 @dataclass(kw_only=True)
 class TableNode(BaseASTNode):
@@ -170,6 +176,20 @@ class ExternalLinkNode:
     url: str
     children: List[InlineNode]
     position: SourcePosition
+    # Enhanced link metadata
+    link_type: str = 'http'  # 'http', 'https', 'file', 'mailto', 'obsidian'
+    title: Optional[str] = None
+
+
+@dataclass(kw_only=True)
+class FileLinkNode:
+    """Link to local file using file:// protocol or relative path."""
+    type: Literal['file_link'] = 'file_link'
+    path: str  # The file path
+    position: SourcePosition
+    display: Optional[str] = None
+    is_absolute: bool = False
+    resolved_path: Optional[str] = None  # Resolved absolute path
 
 @dataclass(kw_only=True)
 class FootnoteRefNode:
@@ -195,6 +215,30 @@ class ASTMetadata:
     estimated_tokens: int
     max_depth: int
     has_executable_code: bool
+
+@dataclass(kw_only=True)
+class DataviewBlockNode(BaseASTNode):
+    """Dataview query block for dynamic content."""
+    type: Literal['dataview'] = 'dataview'
+    query_type: str = 'TABLE'  # TABLE, LIST, TASK, CALENDAR
+    query: str = ""
+    source: Optional[str] = None  # FROM clause
+    fields: List[str] = field(default_factory=list)
+    sort: Optional[str] = None
+    group_by: Optional[str] = None
+    limit: Optional[int] = None
+    is_inline: bool = False
+
+
+@dataclass(kw_only=True)
+class TemplaterBlockNode(BaseASTNode):
+    """Templater command block."""
+    type: Literal['templater'] = 'templater'
+    command_type: str = 'user'  # 'user', 'system', 'file', 'date', 'cursor'
+    command: str = ""
+    is_execution: bool = False  # <% vs <%*
+    is_output: bool = True  # <%= outputs result
+
 
 @dataclass
 class SkillAST:
